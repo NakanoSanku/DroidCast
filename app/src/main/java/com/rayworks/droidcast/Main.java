@@ -26,6 +26,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -251,6 +252,71 @@ public class Main {
         return bout.toByteArray();
     }
 
+    private static byte[] getScreenImageRawInBytes(
+            int w,
+            int h,
+            @Nullable ImageDimensionListener resolver)
+            throws IOException {
+
+        int screenRotation = displayUtil.getScreenRotation();
+        if (screenRotation != 0 && screenRotation != 2) { // not portrait
+            int len = w;
+            w = h;
+            h = len;
+        }
+
+        int destWidth = w;
+        int destHeight = h;
+        Bitmap bitmap = ScreenCaptorUtils.screenshot(destWidth, destHeight, physicalDisplayId);
+
+        if (bitmap == null) {
+            System.out.printf(
+                    Locale.ENGLISH,
+                    ">>> failed to generate image with resolution %d:%d%n",
+                    Main.width,
+                    Main.height);
+
+            destWidth /= 2;
+            destHeight /= 2;
+
+            bitmap = ScreenCaptorUtils.screenshot(destWidth, destHeight, physicalDisplayId);
+        }
+
+        System.out.printf(
+                Locale.ENGLISH,
+                "Bitmap generated with resolution %d:%d, process id %d | thread id %d%n",
+                destWidth,
+                destHeight,
+                Process.myPid(),
+                Process.myTid());
+
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        System.out.println("Bitmap final dimens : " + width + "|" + height);
+        if (resolver != null) {
+            resolver.onResolveDimension(width, height, screenRotation);
+        }
+
+        // 创建一个可访问的位图副本
+        Bitmap mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false); // 使用 ARGB_8888 配置
+
+        // 分配缓冲区
+        ByteBuffer buffer = ByteBuffer.allocate(mutableBitmap.getByteCount());
+
+        // 复制像素数据到缓冲区
+        mutableBitmap.copyPixelsToBuffer(buffer);
+
+        // 重置缓冲区位置
+        buffer.position(0);
+
+        // "Make sure to call Bitmap.recycle() as soon as possible, once its content is not
+        // needed anymore."
+        mutableBitmap.recycle();
+        bitmap.recycle();
+
+        return buffer.array();
+    }
+
     interface ImageDimensionListener {
         void onResolveDimension(int width, int height, int rotation);
     }
@@ -307,15 +373,18 @@ public class Main {
                 String width = pairs.getString(WIDTH);
                 String height = pairs.getString(HEIGHT);
                 String reqFormat = pairs.getString(FORMAT);
-
-                Pair<Bitmap.CompressFormat, String> formatInfo = getImageFormatInfo(reqFormat);
+                Pair<Bitmap.CompressFormat, String> formatInfo;
+                if(reqFormat.equalsIgnoreCase("raw")){
+                    formatInfo = new Pair<>(Bitmap.CompressFormat.PNG, "application/octet-stream");//只是占位
+                }else {
+                    formatInfo = getImageFormatInfo(reqFormat);
+                }
 
                 if (formatInfo == null) {
                     response.code(400);
                     response.send(
                             String.format(
                                     Locale.ENGLISH, "Unsupported image format : %s", reqFormat));
-
                     return;
                 }
 
@@ -340,18 +409,22 @@ public class Main {
 
                 int destWidth = Main.width;
                 int destHeight = Main.height;
-
-                byte[] bytes = getScreenImageInBytes(formatInfo.first, destWidth, destHeight, null);
-
+                byte[] bytes;
+                if (reqFormat.equalsIgnoreCase("raw")){
+                    bytes = getScreenImageRawInBytes(destWidth,destHeight,null);
+                }else {
+                    bytes = getScreenImageInBytes(formatInfo.first, destWidth, destHeight, null);
+                }
                 response.send(formatInfo.second, bytes);
+
 
             } catch (Exception e) {
                 e.printStackTrace();
 
                 response.code(500);
-                String template = ":(  Failed to generate the screenshot on device / emulator : %s - %s - Android OS : %s";
-                String error = String.format(Locale.ENGLISH, template, Build.MANUFACTURER, Build.DEVICE, Build.VERSION.RELEASE);
-                response.send(error);
+//                String template = ":(  Failed to generate the screenshot on device / emulator : %s - %s - Android OS : %s";
+//                String error = String.format(Locale.ENGLISH, template, Build.MANUFACTURER, Build.DEVICE, Build.VERSION.RELEASE);
+                response.send(e.toString());
             }
         }
     }
